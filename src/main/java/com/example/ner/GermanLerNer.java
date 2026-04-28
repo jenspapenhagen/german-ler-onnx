@@ -1,4 +1,3 @@
-
 package com.example.ner;
 
 import ai.djl.huggingface.tokenizers.Encoding;
@@ -6,6 +5,8 @@ import ai.onnxruntime.OnnxTensor;
 import ai.onnxruntime.OrtEnvironment;
 import ai.onnxruntime.OrtException;
 import ai.onnxruntime.OrtSession;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -17,30 +18,70 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer;
 
 import java.util.stream.Collectors;
 
 public class GermanLerNer implements AutoCloseable {
-
+    private Logger logger = LoggerFactory.getLogger(GermanLerNer.class);
+    private static volatile OrtEnvironment SHARED_ENV = null;
+    private static final ConcurrentMap<String, OrtSession> SESSION_CACHE = new ConcurrentHashMap<>();
+    private static volatile String cachedModelPath = null;
     private final OrtEnvironment env;
     private final OrtSession session;
     private final HuggingFaceTokenizer tokenizer;
     private final Map<Integer, String> id2label;
 
+    private final TokenizerPool tokenizerPool;
+
     public record Entity(String type, String text) {
     }
 
     public GermanLerNer() throws OrtException {
-        this.env = OrtEnvironment.getEnvironment();
+        // Initialize shared environment once
+        if (SHARED_ENV == null) {
+            SHARED_ENV = OrtEnvironment.getEnvironment();
+        }
+        this.env = SHARED_ENV;
 
-        this.session = env.createSession(loadModelFromResources(), new OrtSession.SessionOptions());
-        this.tokenizer = loadTokenizer();
+        // Load or reuse a cached model path
+        String modelPath;
+        synchronized (GermanLerNer.class) {
+            modelPath = loadModelFromResources();
+        }
+
+        // Reuse a cached OrtSession per model path
+        OrtSession cached = SESSION_CACHE.get(modelPath);
+        if (cached == null) {
+            try {
+                OrtSession created = SHARED_ENV.createSession(modelPath, new OrtSession.SessionOptions());
+                OrtSession prev = SESSION_CACHE.putIfAbsent(modelPath, created);
+                cached = prev != null ? prev : created;
+            } catch (OrtException e) {
+                throw e;
+            }
+        }
+
+        this.tokenizerPool = new TokenizerPool();
+        this.session = cached;
+        this.tokenizer = tokenizerPool.get();
         this.id2label = loadLabelsFromResources();
+        logger.info("loading done");
     }
 
     private String loadModelFromResources() {
+        long t0 = System.nanoTime();
+        // Return cached path if available
+        if (cachedModelPath != null && Files.exists(Path.of(cachedModelPath))) {
+            long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
+            if (Boolean.getBoolean("onnxperf.logLoadTime")) {
+                logger.info("[ONNX] loadModelFromResources (cached) time: " + elapsedMs + " ms");
+            }
+            return cachedModelPath;
+        }
         try (InputStream resourceAsStream = getClass().getClassLoader().getResourceAsStream("model_int4.onnx")) {
             if (resourceAsStream == null) {
                 throw new IllegalStateException("model_int4.onnx not found in resources");
@@ -49,28 +90,17 @@ public class GermanLerNer implements AutoCloseable {
             Files.copy(resourceAsStream, tempFile, StandardCopyOption.REPLACE_EXISTING);
             tempFile.toFile().deleteOnExit();
 
-            return tempFile.toAbsolutePath().toString();
-        } catch (Exception e) {
-            throw new IllegalStateException(e);
-        }
-    }
-
-
-    private HuggingFaceTokenizer loadTokenizer() {
-        try (InputStream resourceAsStream = getClass().getClassLoader().getResourceAsStream("tokenizer.json")) {
-            if (resourceAsStream == null) {
-                throw new IllegalStateException("tokenizer.json not found in resources");
+            cachedModelPath = tempFile.toAbsolutePath().toString();
+            long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
+            if (Boolean.getBoolean("onnxperf.logLoadTime")) {
+                logger.info("[ONNX] loadModelFromResources load time: " + elapsedMs + " ms");
             }
-
-            final Path tokenizerPath = Files.createTempFile("tokenizer", ".json");
-            Files.copy(resourceAsStream, tokenizerPath, StandardCopyOption.REPLACE_EXISTING);
-            tokenizerPath.toFile().deleteOnExit();
-
-            return HuggingFaceTokenizer.newInstance(tokenizerPath.toAbsolutePath());
+            return cachedModelPath;
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
     }
+
 
     private Map<Integer, String> loadLabelsFromResources() {
         try (InputStream resourceAsStream = getClass().getClassLoader().getResourceAsStream("config.json")) {
@@ -95,7 +125,6 @@ public class GermanLerNer implements AutoCloseable {
     }
 
     public List<Entity> extractEntities(final String text) throws OrtException {
-
         final Encoding encoding = tokenizer.encode(text);
 
         final long[] inputIds = encoding.getIds();
