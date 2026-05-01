@@ -1,7 +1,6 @@
 
 package com.example.ner;
 
-import java.nio.file.Path;
 import java.util.List;
 
 public class Main {
@@ -9,7 +8,8 @@ public class Main {
 
         try (GermanLerNer ner = new GermanLerNer()) {
             final List<GermanLerNer.Entity> entities =
-                    ner.extractEntities("Der BGH entschied über § 280 BGB im Fall Müller.");
+                    ner.extractEntities("Der BGH entschied über § 280 BGB im Fall Müller." +
+                    "Dies ist nach § 242 (1) BGB (abgekürzte Variante) verboten.");
 
             entities.stream()
                     .map(e -> e.type() + " -> " + e.text())
