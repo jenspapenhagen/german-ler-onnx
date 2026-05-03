@@ -38,7 +38,7 @@ public class GermanLerNer implements AutoCloseable {
 
     private final TokenizerPool tokenizerPool;
 
-    public record Entity(String text, String type) {
+    public record Entity(String text, LegalEntityType type) {
     }
 
     public GermanLerNer() throws OrtException {
@@ -147,48 +147,67 @@ public class GermanLerNer implements AutoCloseable {
 
         final List<Entity> entities = new ArrayList<>();
 
-        String currentType = null;
+        final LegalEntityType[] currentType = {null};
         List<String> currentTokens = new ArrayList<>();
 
+        //clean up BIO tagging (sometimes extended to BIOES).
+        // B- = Begin -> the first token of an entity
+        // I- = Inside -> a continuation token inside the same entity
+        // O = Outside -> not part of any entity
+
         for (int i = 0; i < predictions.length; i++) {
-            final String token = tokens.get(i);
-            //skip controll token
-            if (LegalEntityType.controllToken().stream().anyMatch(e -> token.equals(e.name()))) {
+            String token = tokens.get(i);
+
+            // skip control tokens (fast O(1))
+            if (LegalEntityType.isControlToken(token)) {
                 continue;
             }
 
-            final String label = id2label.get(predictions[i]);
+            String label = id2label.get(predictions[i]);
+            BioTag tag = BioTag.parse(label);
 
-            if (label == null || label.equals("O")) {
-                if (currentType != null) {
-                    entities.add(new Entity(String.join(" ", currentTokens), currentType));
+            switch (tag.prefix()) {
+                case 'O' -> {
+                    if (currentType[0] != null) {
+                        entities.add(new Entity(String.join(" ", currentTokens), currentType[0]));
+                    }
                     currentTokens.clear();
-                    currentType = null;
+                    currentType[0] = null;
                 }
-                continue;
-            }
-
-            if (label.startsWith("B-")) {
-                if (currentType != null) {
-                    entities.add(new Entity(String.join(" ", currentTokens), currentType));
+                case 'B' -> {
+                    if (currentType[0] != null) {
+                        entities.add(new Entity(String.join(" ", currentTokens), currentType[0]));
+                    }
+                    currentType[0] = tag.type();
+                    currentTokens = new ArrayList<>();
+                    currentTokens.add(token);
                 }
-
-                currentType = label.substring(2);
-                currentTokens = new ArrayList<>();
-                currentTokens.add(token);
-            } else if (label.startsWith("I-") && label.substring(2).equals(currentType)) {
-                currentTokens.add(token);
-            } else {
-                if (currentType != null) {
-                    entities.add(new Entity(String.join(" ", currentTokens), currentType));
+                case 'I' -> {
+                    if (currentType[0] != null && currentType[0] == tag.type()) {
+                        currentTokens.add(token);
+                    } else {
+                        // broken sequence → flush + reset
+                        if (currentType[0] != null) {
+                            entities.add(new Entity(String.join(" ", currentTokens), currentType[0]));
+                        }
+                        currentType[0] = null;
+                        currentTokens.clear();
+                    }
                 }
-                currentType = null;
-                currentTokens.clear();
+                default -> {
+                    // future-proof for BIOES (E/S)
+                    if (currentType[0] != null) {
+                        entities.add(new Entity(String.join(" ", currentTokens), currentType[0]));
+                        currentTokens.clear();
+                        currentType[0] = null;
+                    }
+                }
             }
         }
 
-        if (currentType != null) {
-            entities.add(new Entity(String.join(" ", currentTokens), currentType));
+        // flush tail
+        if (currentType[0] != null) {
+            entities.add(new Entity(String.join(" ", currentTokens), currentType[0]));
         }
 
         return entities;

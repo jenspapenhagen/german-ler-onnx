@@ -1,6 +1,9 @@
 package com.example.ner;
 
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 public enum LegalEntityType {
 
@@ -38,8 +41,20 @@ public enum LegalEntityType {
         this.english = english;
     }
 
-    public static List<LegalEntityType> controllToken(){
+    private static final Map<String, LegalEntityType> LOOKUP =
+            Arrays.stream(values())
+                    .collect(Collectors.toMap(Enum::name, e -> e));
+
+    public static LegalEntityType fromCode(String code) {
+        return LOOKUP.get(code) != null ? LOOKUP.get(code) : LegalEntityType.UNK;
+    }
+
+    public static List<LegalEntityType> controlToken() {
         return List.of(CLS, PAD, SEP);
+    }
+
+    public static boolean isControlToken(String token) {
+        return controlToken().contains(fromCode(token));
     }
 
     public String getGerman() {
