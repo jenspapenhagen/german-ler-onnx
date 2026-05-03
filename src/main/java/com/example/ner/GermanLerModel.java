@@ -94,15 +94,15 @@ public class GermanLerModel implements AutoCloseable {
     /**
      * Runs inference, returns logits.
      */
-    public float[][] runInference(long[] inputIds, long[] attentionMask, long[] tokenTypeIds) throws OrtException {
-        Map<String, OnnxTensor> inputs = INPUT_MAP.get();
+    public float[][] runInference(final long[] inputIds, final long[] attentionMask, final long[] tokenTypeIds) throws OrtException {
+        final Map<String, OnnxTensor> inputs = INPUT_MAP.get();
         inputs.clear();
         inputs.put("input_ids", OnnxTensor.createTensor(env, new long[][]{inputIds}));
         inputs.put("attention_mask", OnnxTensor.createTensor(env, new long[][]{attentionMask}));
         inputs.put("token_type_ids", OnnxTensor.createTensor(env, new long[][]{tokenTypeIds}));
 
-        OrtSession.Result result = session.run(inputs);
-        float[][][] logits = (float[][][]) result.get(0).getValue();
+        final OrtSession.Result result = session.run(inputs);
+        final float[][][] logits = (float[][][]) result.get(0).getValue();
         return logits[0];
     }
 
@@ -110,6 +110,17 @@ public class GermanLerModel implements AutoCloseable {
      * Thread-local input map
      */
     private static final ThreadLocal<Map<String, OnnxTensor>> INPUT_MAP = ThreadLocal.withInitial(ConcurrentHashMap::new);
+
+    public float[][][] runBatchInference(final Batch batch) throws OrtException {
+        final Map<String, OnnxTensor> inputs = INPUT_MAP.get();
+        inputs.clear();
+        inputs.put("input_ids", OnnxTensor.createTensor(env, batch.inputIds()));
+        inputs.put("attention_mask", OnnxTensor.createTensor(env, batch.attentionMask()));
+        inputs.put("token_type_ids", OnnxTensor.createTensor(env, batch.tokenTypeIds()));
+
+        final OrtSession.Result result = session.run(inputs);
+        return (float[][][]) result.get(0).getValue();
+    }
 
     private OrtSession createSession() throws OrtException {
         final String modelPath = loadModelPath();

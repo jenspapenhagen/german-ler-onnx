@@ -7,6 +7,10 @@ import ai.onnxruntime.OrtException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Arrays;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 /**
  * German Legal Entity Recognizer.
@@ -99,7 +103,7 @@ public class GermanLerNer {
             }
 
             if (prefix == 'B') {
-                if (currentType != null) {
+                if (currentType != null && currentType != type) {
                     result.add(new EntitySpan(start, i, currentType));
                 }
                 currentType = type;
@@ -135,10 +139,11 @@ public class GermanLerNer {
             if (LegalEntityType.isControlToken(token)) {
                 continue;
             }
+            if (!stringBuilder.isEmpty()) {
+                stringBuilder.append(" ");
+            }
             if (token.startsWith("##")) {
                 stringBuilder.append(token.substring(2));
-            } else if (!stringBuilder.isEmpty()) {
-                stringBuilder.append(" ").append(token);
             } else {
                 stringBuilder.append(token);
             }
@@ -157,5 +162,79 @@ public class GermanLerNer {
             }
         }
         return idx;
+    }
+
+    public List<List<Entity>> extractEntitiesBatch(List<String> texts) throws OrtException {
+        if (texts.isEmpty()) {
+            return List.of();
+        }
+
+        String[] textArray = texts.toArray(new String[0]);
+        final var tokenizer = model.tokenizer();
+        final var builder = new Batch.BatchBuilder();
+
+        for (String text : texts) {
+            Encoding encoding = tokenizer.encode(text);
+            builder.add(encoding.getIds(), encoding.getAttentionMask(), encoding.getTypeIds());
+        }
+
+        List<Batch> batches = builder.build();
+        List<List<Entity>> orderedResults = new ArrayList<>(texts.size());
+
+        for (Batch batch : batches) {
+            float[][][] logits = model.runBatchInference(batch);
+            int[] originalIndices = batch.originalIndices();
+            String[] batchTexts = new String[batch.batchSize()];
+            for (int i = 0; i < batch.batchSize(); i++) {
+                batchTexts[i] = textArray[originalIndices[i]];
+            }
+            List<List<Entity>> batchResults = decodeBatchParallel(logits, batch.originalLengths(), batchTexts);
+            for (int i = 0; i < batch.batchSize(); i++) {
+                int origIdx = originalIndices[i];
+                while (orderedResults.size() <= origIdx) {
+                    orderedResults.add(null);
+                }
+                orderedResults.set(origIdx, batchResults.get(i));
+            }
+        }
+
+        return orderedResults;
+    }
+
+    private List<List<Entity>> decodeBatchParallel(final float[][][] logits, final int[] originalLengths, final String[] originalTexts) {
+        final int batchSize = logits.length;
+        final List<Future<List<Entity>>> futures = new ArrayList<>();
+
+        List<List<Entity>> results;
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int b = 0; b < batchSize; b++) {
+                final int idx = b;
+                futures.add(executor.submit(() -> decodeSingle(idx, logits, originalLengths, originalTexts[idx])));
+            }
+
+            results = new ArrayList<>(batchSize);
+            for (Future<List<Entity>> f : futures) {
+                try {
+                    results.add(f.get());
+                } catch (Exception e) {
+                    results.add(List.of());
+                }
+            }
+            executor.shutdown();
+        }
+
+        return results;
+    }
+
+    private List<Entity> decodeSingle(final int idx, final float[][][] logits, final int[] originalLengths, final String originalText) {
+        final float[][] seqLogits = Arrays.copyOfRange(logits[idx], 0, originalLengths[idx]);
+        final List<EntitySpan> spans = decodeSpansFromLogits(seqLogits, model.id2label());
+        final String[] tokens = model.tokenizer().encode(originalText).getTokens();
+
+        final List<Entity> entities = new ArrayList<>(spans.size());
+        for (final EntitySpan span : spans) {
+            entities.add(new Entity(spanToText(span, tokens), span.type()));
+        }
+        return entities;
     }
 }

@@ -74,7 +74,7 @@ public enum LegalEntityType {
      * @return true if control token, false otherwise
      */
     public static boolean isControlToken(String token) {
-        return controlToken().contains(fromCode(token));
+        return token.equals("[CLS]") || token.equals("[SEP]") || token.equals("[PAD]") || token.equals("[UNK]");
     }
 
     /**
