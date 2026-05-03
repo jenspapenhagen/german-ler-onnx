@@ -1,6 +1,7 @@
 package com.example.ner;
 
 import ai.djl.huggingface.tokenizers.Encoding;
+import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer;
 import ai.onnxruntime.OnnxTensor;
 import ai.onnxruntime.OrtEnvironment;
 import ai.onnxruntime.OrtException;
@@ -20,11 +21,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-
-import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer;
-
 import java.util.stream.Collectors;
 
+/**
+ * German Legal Entity Recognizer using ONNX model.
+ */
 public class GermanLerNer implements AutoCloseable {
     private final Logger logger = LoggerFactory.getLogger(GermanLerNer.class);
 
@@ -41,6 +42,14 @@ public class GermanLerNer implements AutoCloseable {
     public record Entity(String text, LegalEntityType type) {
     }
 
+    public record EntitySpan(int start, int end, LegalEntityType type) {
+    }
+
+    /**
+     * Constructs a new GermanLerNer instance.
+     *
+     * @throws OrtException if model loading fails
+     */
     public GermanLerNer() throws OrtException {
         // Initialize shared environment once
         if (SHARED_ENV == null) {
@@ -125,6 +134,13 @@ public class GermanLerNer implements AutoCloseable {
         }
     }
 
+    /**
+     * Extracts legal entities from German legal text.
+     *
+     * @param text the German legal text to analyze
+     * @return list of extracted entities
+     * @throws OrtException if inference fails
+     */
     public List<Entity> extractEntities(final String text) throws OrtException {
         final Encoding encoding = tokenizer.encode(text);
 
@@ -150,10 +166,6 @@ public class GermanLerNer implements AutoCloseable {
         final LegalEntityType[] currentType = {null};
         List<String> currentTokens = new ArrayList<>();
 
-        //clean up BIO tagging (sometimes extended to BIOES).
-        // B- = Begin -> the first token of an entity
-        // I- = Inside -> a continuation token inside the same entity
-        // O = Outside -> not part of any entity
 
         for (int i = 0; i < predictions.length; i++) {
             String token = tokens.get(i);
@@ -163,9 +175,12 @@ public class GermanLerNer implements AutoCloseable {
                 continue;
             }
 
-            String label = id2label.get(predictions[i]);
-            BioTag tag = BioTag.parse(label);
-
+            final String label = id2label.get(predictions[i]);
+            //clean up BIO tagging (sometimes extended to BIOES).
+            // B- = Begin -> the first token of an entity
+            // I- = Inside -> a continuation token inside the same entity
+            // O = Outside -> not part of any entity
+            final BioTag tag = BioTag.parse(label);
             switch (tag.prefix()) {
                 case 'O' -> {
                     if (currentType[0] != null) {
@@ -213,6 +228,12 @@ public class GermanLerNer implements AutoCloseable {
         return entities;
     }
 
+    /**
+     * Computes argmax along axis 1 (index of max value per row).
+     *
+     * @param logits 2D float array [sequence_length][num_labels]
+     * @return 1D array of indices [sequence_length]
+     */
     private int[] argmax(final float[][] logits) {
         final int[] res = new int[logits.length];
 
@@ -231,6 +252,11 @@ public class GermanLerNer implements AutoCloseable {
         return res;
     }
 
+    /**
+     * Closes the NER runtime and releases resources.
+     *
+     * @throws Exception if closing fails
+     */
     public void close() throws Exception {
         session.close();
         env.close();

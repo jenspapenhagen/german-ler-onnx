@@ -7,10 +7,19 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 
+/**
+ * Thread-localpool of HuggingFace tokenizers.
+ * <p>
+ * Each thread gets its own tokenizer instance.
+ * </p>
+ */
 public class TokenizerPool {
 
     private final ThreadLocal<HuggingFaceTokenizer> local;
 
+    /**
+     * Creates a new TokenizerPool.
+     */
     public TokenizerPool() {
 
         this.local = ThreadLocal.withInitial(() -> {
@@ -30,6 +39,11 @@ public class TokenizerPool {
         });
     }
 
+    /**
+     * Gets a tokenizer for the current thread.
+     *
+     * @return the tokenizer instance
+     */
     public HuggingFaceTokenizer get() {
         return local.get();
     }

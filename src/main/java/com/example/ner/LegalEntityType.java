@@ -5,6 +5,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+/**
+ * Legal entity types for German legal NER.
+ */
 public enum LegalEntityType {
 
     GS("Gesetz", "Law / Statute"),
@@ -45,22 +48,45 @@ public enum LegalEntityType {
             Arrays.stream(values())
                     .collect(Collectors.toMap(Enum::name, e -> e));
 
+    /**
+     * Returns the LegalEntityType for a given code.
+     *
+     * @param code the entity type code (e.g., "GS", "RS")
+     * @return the corresponding LegalEntityType, or UNK if not found
+     */
     public static LegalEntityType fromCode(String code) {
         return LOOKUP.get(code) != null ? LOOKUP.get(code) : LegalEntityType.UNK;
     }
 
+    /**
+     * Returns all control tokens used by the tokenizer.
+     *
+     * @return list of control token types (CLS, PAD, SEP)
+     */
     public static List<LegalEntityType> controlToken() {
         return List.of(CLS, PAD, SEP);
     }
 
+    /**
+     * Checks if the given token is a control token.
+     *
+     * @param token the token to check
+     * @return true if control token, false otherwise
+     */
     public static boolean isControlToken(String token) {
         return controlToken().contains(fromCode(token));
     }
 
+    /**
+     * @return the German label
+     */
     public String getGerman() {
         return german;
     }
 
+    /**
+     * @return the English label
+     */
     public String getEnglish() {
         return english;
     }
