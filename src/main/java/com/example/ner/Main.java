@@ -6,19 +6,20 @@ import java.util.stream.Collectors;
 
 public class Main {
     public static void main(String[] args) throws Exception {
+        final GermanLerModel germanLerModel = GermanLerModel.getInstance();
 
-        try (GermanLerNer ner = new GermanLerNer()) {
-            final String sentence = "Der BGH entschied über § 280 BGB im Fall Müller. Dies ist nach § 242 (1) BGB (abgekürzte Variante) verboten.";
+        final GermanLerNer ner = new GermanLerNer(germanLerModel);
 
-            System.out.println("Orginal Sentence: " + sentence);
+        final String sentence = "Der BGH entschied über § 280 BGB im Fall Müller. Dies ist nach § 242 (1) BGB (abgekürzte Variante) verboten.";
 
-            final List<GermanLerNer.Entity> entities = ner.extractEntities(sentence);
+        System.out.println("Orginal Sentence: " + sentence);
 
-            final String collect = entities.stream()
-                    .map(e -> e.text() + " (" + e.type().getGerman() + ")")
-                    .collect(Collectors.joining(" "));
+        final List<GermanLerNer.Entity> entities = ner.extractEntities(sentence);
 
-            System.out.println("Extracted Keywords: " + collect);
-        }
+        final String collect = entities.stream()
+                .map(e -> e.text() + " (" + e.type().getGerman() + ")")
+                .collect(Collectors.joining(" \n"));
+
+        System.out.println("Extracted Keywords: \n" + collect);
     }
 }
