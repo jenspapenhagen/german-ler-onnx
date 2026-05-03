@@ -42,6 +42,9 @@ public class GermanLerNer implements AutoCloseable {
     public record Entity(String text, LegalEntityType type) {
     }
 
+    /**
+     * Entity span with token indices (start/end).
+     */
     public record EntitySpan(int start, int end, LegalEntityType type) {
     }
 
@@ -86,7 +89,7 @@ public class GermanLerNer implements AutoCloseable {
         long t0 = System.nanoTime();
         // Return cached path if available
         if (cachedModelPath != null && Files.exists(Path.of(cachedModelPath))) {
-            long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
+            final long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
             if (Boolean.getBoolean("onnxperf.logLoadTime")) {
                 logger.info("[ONNX] loadModelFromResources (cached) time: " + elapsedMs + " ms");
             }
@@ -135,10 +138,10 @@ public class GermanLerNer implements AutoCloseable {
     }
 
     /**
-     * Extracts legal entities from German legal text.
+     * Extracts entity spans using char spans (returns original text directly).
      *
-     * @param text the German legal text to analyze
-     * @return list of extracted entities
+     * @param text the original German legal text
+     * @return list of extracted entities with original text
      * @throws OrtException if inference fails
      */
     public List<Entity> extractEntities(final String text) throws OrtException {
@@ -149,107 +152,135 @@ public class GermanLerNer implements AutoCloseable {
         final long[] tokenTypeIds = encoding.getTypeIds();
 
         final Map<String, OnnxTensor> inputs = new HashMap<>();
-
         inputs.put("input_ids", OnnxTensor.createTensor(env, new long[][]{inputIds}));
         inputs.put("attention_mask", OnnxTensor.createTensor(env, new long[][]{attentionMask}));
         inputs.put("token_type_ids", OnnxTensor.createTensor(env, new long[][]{tokenTypeIds}));
 
         final OrtSession.Result result = session.run(inputs);
-
         final float[][][] logits = (float[][][]) result.get(0).getValue();
-        final int[] predictions = argmax(logits[0]);
 
-        final List<String> tokens = List.of(encoding.getTokens());
+        final List<EntitySpan> spans = decodeSpansFromLogits(logits[0], id2label);
+        final String[] tokens = encoding.getTokens();
 
-        final List<Entity> entities = new ArrayList<>();
-
-        final LegalEntityType[] currentType = {null};
-        List<String> currentTokens = new ArrayList<>();
-
-
-        for (int i = 0; i < predictions.length; i++) {
-            String token = tokens.get(i);
-
-            // skip control tokens (fast O(1))
-            if (LegalEntityType.isControlToken(token)) {
-                continue;
-            }
-
-            final String label = id2label.get(predictions[i]);
-            //clean up BIO tagging (sometimes extended to BIOES).
-            // B- = Begin -> the first token of an entity
-            // I- = Inside -> a continuation token inside the same entity
-            // O = Outside -> not part of any entity
-            final BioTag tag = BioTag.parse(label);
-            switch (tag.prefix()) {
-                case 'O' -> {
-                    if (currentType[0] != null) {
-                        entities.add(new Entity(String.join(" ", currentTokens), currentType[0]));
-                    }
-                    currentTokens.clear();
-                    currentType[0] = null;
-                }
-                case 'B' -> {
-                    if (currentType[0] != null) {
-                        entities.add(new Entity(String.join(" ", currentTokens), currentType[0]));
-                    }
-                    currentType[0] = tag.type();
-                    currentTokens = new ArrayList<>();
-                    currentTokens.add(token);
-                }
-                case 'I' -> {
-                    if (currentType[0] != null && currentType[0] == tag.type()) {
-                        currentTokens.add(token);
-                    } else {
-                        // broken sequence → flush + reset
-                        if (currentType[0] != null) {
-                            entities.add(new Entity(String.join(" ", currentTokens), currentType[0]));
-                        }
-                        currentType[0] = null;
-                        currentTokens.clear();
-                    }
-                }
-                default -> {
-                    // future-proof for BIOES (E/S)
-                    if (currentType[0] != null) {
-                        entities.add(new Entity(String.join(" ", currentTokens), currentType[0]));
-                        currentTokens.clear();
-                        currentType[0] = null;
-                    }
-                }
-            }
+        final List<Entity> entities = new ArrayList<>(spans.size());
+        for (EntitySpan span : spans) {
+            String spanText = spanToText(span, tokens);
+            entities.add(new Entity(spanText, span.type()));
         }
-
-        // flush tail
-        if (currentType[0] != null) {
-            entities.add(new Entity(String.join(" ", currentTokens), currentType[0]));
-        }
-
         return entities;
     }
 
     /**
-     * Computes argmax along axis 1 (index of max value per row).
+     * Decodes entity spans from logits using BIO tagging.
      *
-     * @param logits 2D float array [sequence_length][num_labels]
-     * @return 1D array of indices [sequence_length]
+     * @param logits   2D array [seq_len][num_labels]
+     * @param id2label label mapping
+     * @return list of entity spans
      */
-    private int[] argmax(final float[][] logits) {
-        final int[] res = new int[logits.length];
+    private static List<EntitySpan> decodeSpansFromLogits(final float[][] logits, final Map<Integer, String> id2label) {
+        final List<EntitySpan> result = new ArrayList<>(8);
+
+        LegalEntityType currentType = null;
+        int start = -1;
 
         for (int i = 0; i < logits.length; i++) {
-            float max = Float.NEGATIVE_INFINITY;
-            int idx = 0;
+            int pred = argmax(logits[i]);
+            final String label = id2label.get(pred);
 
-            for (int j = 0; j < logits[i].length; j++) {
-                if (logits[i][j] > max) {
-                    max = logits[i][j];
-                    idx = j;
+            // Skip null labels
+            if (label == null) {
+                continue;
+            }
+
+            // O fast path
+            if (label.charAt(0) == 'O') {
+                if (currentType != null) {
+                    result.add(new EntitySpan(start, i, currentType));
+                    currentType = null;
+                }
+                continue;
+            }
+
+            final char prefix = label.charAt(0);
+            final String code = label.substring(2);
+            final LegalEntityType type = LegalEntityType.fromCode(code);
+
+            if (type == LegalEntityType.UNK) {
+                if (currentType != null) {
+                    result.add(new EntitySpan(start, i, currentType));
+                    currentType = null;
+                }
+                continue;
+            }
+
+            if (prefix == 'B') {
+                if (currentType != null) {
+                    result.add(new EntitySpan(start, i, currentType));
+                }
+                currentType = type;
+                start = i;
+            } else if (prefix == 'I') {
+                if (currentType != type) {
+                    if (currentType != null) {
+                        result.add(new EntitySpan(start, i, currentType));
+                    }
+                    currentType = null;
+                }
+            } else {
+                if (currentType != null) {
+                    result.add(new EntitySpan(start, i, currentType));
+                    currentType = null;
                 }
             }
-            res[i] = idx;
         }
-        return res;
+
+        if (currentType != null) {
+            result.add(new EntitySpan(start, logits.length, currentType));
+        }
+
+        return result;
+    }
+
+    /**
+     * Extracts original text from span by joining tokens.
+     *
+     * @param span   entity span with token indices
+     * @param tokens tokenizer tokens
+     * @return extracted text span
+     */
+    private static String spanToText(final EntitySpan span, final String[] tokens) {
+        final StringBuilder stringBuilder = new StringBuilder();
+        for (int i = span.start(); i < span.end(); i++) {
+            final String token = tokens[i];
+            if (LegalEntityType.isControlToken(token)) {
+                continue;
+            }
+            // Handle BERT subword tokens
+            if (token.startsWith("##")) {
+                stringBuilder.append(token.substring(2));
+            } else if (!stringBuilder.isEmpty()) {
+                stringBuilder.append(" ").append(token);
+            } else {
+                stringBuilder.append(token);
+            }
+        }
+        return stringBuilder.toString().trim();
+    }
+
+    /**
+     * Argmax for single row (no allocations).
+     */
+    private static int argmax(final float[] row) {
+        int idx = 0;
+        float max = row[0];
+        for (int i = 1; i < row.length; i++) {
+            float v = row[i];
+            if (v > max) {
+                max = v;
+                idx = i;
+            }
+        }
+        return idx;
     }
 
     /**
