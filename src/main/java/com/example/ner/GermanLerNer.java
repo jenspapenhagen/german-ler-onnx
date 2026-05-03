@@ -26,7 +26,8 @@ import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer;
 import java.util.stream.Collectors;
 
 public class GermanLerNer implements AutoCloseable {
-    private Logger logger = LoggerFactory.getLogger(GermanLerNer.class);
+    private final Logger logger = LoggerFactory.getLogger(GermanLerNer.class);
+
     private static volatile OrtEnvironment SHARED_ENV = null;
     private static final ConcurrentMap<String, OrtSession> SESSION_CACHE = new ConcurrentHashMap<>();
     private static volatile String cachedModelPath = null;
@@ -37,7 +38,7 @@ public class GermanLerNer implements AutoCloseable {
 
     private final TokenizerPool tokenizerPool;
 
-    public record Entity(String type, String text) {
+    public record Entity(String text, String type) {
     }
 
     public GermanLerNer() throws OrtException {
@@ -153,9 +154,9 @@ public class GermanLerNer implements AutoCloseable {
             final String token = tokens.get(i);
             //skip token
 //            "cls_token": "[CLS]",
-//            "mask_token": "[MASK]",
 //            "pad_token": "[PAD]",
 //            "sep_token": "[SEP]",
+//            "mask_token": "[MASK]",
 //            "unk_token": "[UNK]"
             if (token.equals("[CLS]") || token.equals("[SEP]") || token.equals("[PAD]")) {
                 continue;
@@ -165,7 +166,7 @@ public class GermanLerNer implements AutoCloseable {
 
             if (label == null || label.equals("O")) {
                 if (currentType != null) {
-                    entities.add(new Entity(currentType, String.join(" ", currentTokens)));
+                    entities.add(new Entity(String.join(" ", currentTokens), currentType));
                     currentTokens.clear();
                     currentType = null;
                 }
@@ -174,7 +175,7 @@ public class GermanLerNer implements AutoCloseable {
 
             if (label.startsWith("B-")) {
                 if (currentType != null) {
-                    entities.add(new Entity(currentType, String.join(" ", currentTokens)));
+                    entities.add(new Entity(String.join(" ", currentTokens), currentType));
                 }
 
                 currentType = label.substring(2);
@@ -184,7 +185,7 @@ public class GermanLerNer implements AutoCloseable {
                 currentTokens.add(token);
             } else {
                 if (currentType != null) {
-                    entities.add(new Entity(currentType, String.join(" ", currentTokens)));
+                    entities.add(new Entity(String.join(" ", currentTokens), currentType));
                 }
                 currentType = null;
                 currentTokens.clear();
@@ -192,7 +193,7 @@ public class GermanLerNer implements AutoCloseable {
         }
 
         if (currentType != null) {
-            entities.add(new Entity(currentType, String.join(" ", currentTokens)));
+            entities.add(new Entity(String.join(" ", currentTokens), currentType));
         }
 
         return entities;
