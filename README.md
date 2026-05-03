@@ -1,5 +1,10 @@
+=== German LER ONNX Java Library ===
 
-German LER ONNX Java Library
+Model:
+https://huggingface.co/mayflowergmbh/bert-german-ler-onnx-int4
+
+Paper:
+https://arxiv.org/abs/2003.13016
 
 Entity Types 
 Code 	German 	English 	Share in dataset
