@@ -152,13 +152,8 @@ public class GermanLerNer implements AutoCloseable {
 
         for (int i = 0; i < predictions.length; i++) {
             final String token = tokens.get(i);
-            //skip token
-//            "cls_token": "[CLS]",
-//            "pad_token": "[PAD]",
-//            "sep_token": "[SEP]",
-//            "mask_token": "[MASK]",
-//            "unk_token": "[UNK]"
-            if (token.equals("[CLS]") || token.equals("[SEP]") || token.equals("[PAD]")) {
+            //skip controll token
+            if (LegalEntityType.controllToken().stream().anyMatch(e -> token.equals(e.name()))) {
                 continue;
             }
 
